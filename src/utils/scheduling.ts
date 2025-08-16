@@ -3332,12 +3332,15 @@ export const generateNewStudyPlanWithPreservation = (
 ): { plans: StudyPlan[]; suggestions: Array<{ taskTitle: string; unscheduledMinutes: number }> } => {
   // First, generate the new study plan
   const result = generateNewStudyPlan(tasks, settings, fixedCommitments, existingStudyPlans);
-  
-  // Then apply manual schedule preservation
+
+  // Apply manual schedule preservation
   const preservedPlans = preserveManualSchedules(result.plans, existingStudyPlans);
-  
+
+  // Apply intelligent workload balancing around one-sitting tasks
+  const balancedPlans = rebalanceAroundOneSittingTasks(preservedPlans, tasks, settings, fixedCommitments);
+
   return {
-    plans: preservedPlans,
+    plans: balancedPlans,
     suggestions: result.suggestions
   };
 };
