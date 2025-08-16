@@ -1201,8 +1201,42 @@ export const generateNewStudyPlan = (
         }
 
         if (!scheduledOneSitting) {
-          // If we couldn't schedule as one sitting, track all hours as unscheduled
-          unscheduledHours += totalHours;
+          // Smart fallback: try to find alternative solutions
+          const fallbackResult = handleOneSittingFallback(
+            task,
+            totalHours,
+            daysForTask,
+            dailyRemainingHours,
+            settings
+          );
+
+          if (fallbackResult.scheduled) {
+            // Successfully scheduled with fallback approach
+            for (const { date, hours } of fallbackResult.scheduledSessions) {
+              let dayPlan = studyPlans.find(p => p.date === date)!;
+              const roundedHours = Math.round(hours * 60) / 60;
+
+              dayPlan.plannedTasks.push({
+                taskId: task.id,
+                scheduledTime: date,
+                startTime: '',
+                endTime: '',
+                allocatedHours: roundedHours,
+                sessionNumber: fallbackResult.scheduledSessions.indexOf({ date, hours }) + 1,
+                isFlexible: true,
+                status: 'scheduled'
+              });
+
+              dayPlan.totalStudyHours = Math.round((dayPlan.totalStudyHours + roundedHours) * 60) / 60;
+              dailyRemainingHours[date] = Math.round((dailyRemainingHours[date] - roundedHours) * 60) / 60;
+            }
+            totalHours = Math.round((totalHours - fallbackResult.totalScheduled) * 60) / 60;
+          }
+
+          // Track any remaining unscheduled hours
+          if (totalHours > 0) {
+            unscheduledHours += totalHours;
+          }
         }
       } else {
         // Regular task scheduling (can be split)
