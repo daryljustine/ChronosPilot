@@ -3542,6 +3542,181 @@ const rebalanceAroundOneSittingTasks = (
 };
 
 /**
+ * Applies final workload smoothing to minimize daily variation in study hours
+ */
+const applyWorkloadSmoothing = (
+  studyPlans: StudyPlan[],
+  tasks: Task[],
+  settings: UserSettings,
+  fixedCommitments: FixedCommitment[]
+): StudyPlan[] => {
+  // Calculate current workload distribution
+  const dailyWorkloads = new Map<string, number>();
+  const movableSessions = new Map<string, StudySession[]>();
+
+  for (const plan of studyPlans) {
+    dailyWorkloads.set(plan.date, plan.totalStudyHours);
+
+    // Identify sessions that can be moved (non-one-sitting, non-manual, non-completed)
+    const movable = plan.plannedTasks.filter(session => {
+      const task = tasks.find(t => t.id === session.taskId);
+      return task &&
+        !task.isOneTimeTask &&
+        !session.manuallyScheduled &&
+        !session.done &&
+        session.status !== 'completed' &&
+        session.status !== 'skipped';
+    });
+
+    movableSessions.set(plan.date, movable);
+  }
+
+  // Calculate workload statistics
+  const workloads = Array.from(dailyWorkloads.values());
+  const avgWorkload = workloads.reduce((a, b) => a + b, 0) / workloads.length;
+  const maxWorkload = Math.max(...workloads);
+  const minWorkload = Math.min(...workloads);
+  const workloadVariation = maxWorkload - minWorkload;
+
+  // If variation is reasonable, no smoothing needed
+  if (workloadVariation <= 2) {
+    return studyPlans;
+  }
+
+  // Identify overloaded and underloaded days
+  const overloadThreshold = avgWorkload + (workloadVariation * 0.3);
+  const underloadThreshold = avgWorkload - (workloadVariation * 0.3);
+
+  const overloadedDays = Array.from(dailyWorkloads.entries())
+    .filter(([, workload]) => workload > overloadThreshold)
+    .sort(([, a], [, b]) => b - a); // Most overloaded first
+
+  const underloadedDays = Array.from(dailyWorkloads.entries())
+    .filter(([, workload]) => workload < underloadThreshold)
+    .sort(([, a], [, b]) => a - b); // Least loaded first
+
+  // Move sessions from overloaded to underloaded days
+  const result = [...studyPlans];
+  const minSessionLength = (settings.minSessionLength || 15) / 60;
+
+  for (const [overloadedDate, overloadedWorkload] of overloadedDays) {
+    const sessionsToMove = movableSessions.get(overloadedDate) || [];
+    if (sessionsToMove.length === 0) continue;
+
+    // Sort sessions by size (smallest first for easier redistribution)
+    sessionsToMove.sort((a, b) => a.allocatedHours - b.allocatedHours);
+
+    for (const session of sessionsToMove) {
+      const task = tasks.find(t => t.id === session.taskId);
+      if (!task) continue;
+
+      // Find a suitable underloaded day for this session
+      const suitableDay = findSuitableUnderloadedDay(
+        session,
+        task,
+        underloadedDays,
+        dailyWorkloads,
+        settings,
+        avgWorkload
+      );
+
+      if (suitableDay) {
+        // Move the session
+        moveSessionBetweenPlans(result, session, overloadedDate, suitableDay);
+
+        // Update workload tracking
+        dailyWorkloads.set(overloadedDate, dailyWorkloads.get(overloadedDate)! - session.allocatedHours);
+        dailyWorkloads.set(suitableDay, dailyWorkloads.get(suitableDay)! + session.allocatedHours);
+
+        // Check if this day is no longer significantly overloaded
+        if (dailyWorkloads.get(overloadedDate)! <= avgWorkload + 1) {
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Finds a suitable underloaded day for moving a session
+ */
+const findSuitableUnderloadedDay = (
+  session: StudySession,
+  task: Task,
+  underloadedDays: [string, number][],
+  dailyWorkloads: Map<string, number>,
+  settings: UserSettings,
+  avgWorkload: number
+): string | null => {
+  for (const [underloadedDate, currentWorkload] of underloadedDays) {
+    // Check if this day is within the task's valid date range
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const startDate = task.startDate ? new Date(task.startDate) : today;
+    const startDateStr = startDate > today ? task.startDate! : todayStr;
+
+    if (underloadedDate < startDateStr) continue;
+
+    if (task.deadline && task.deadlineType !== 'none') {
+      const deadline = new Date(task.deadline);
+      if (settings.bufferDays > 0) {
+        deadline.setDate(deadline.getDate() - settings.bufferDays);
+      }
+      const deadlineStr = deadline.toISOString().split('T')[0];
+      if (underloadedDate > deadlineStr) continue;
+    }
+
+    // Check if adding this session would create a reasonable workload
+    const newWorkload = currentWorkload + session.allocatedHours;
+    if (newWorkload <= avgWorkload + 1 && newWorkload <= settings.dailyAvailableHours) {
+      return underloadedDate;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Moves a session from one day to another in the study plans
+ */
+const moveSessionBetweenPlans = (
+  studyPlans: StudyPlan[],
+  session: StudySession,
+  fromDate: string,
+  toDate: string
+): void => {
+  const fromPlan = studyPlans.find(p => p.date === fromDate);
+  const toPlan = studyPlans.find(p => p.date === toDate);
+
+  if (!fromPlan || !toPlan) return;
+
+  // Remove from source plan
+  const sessionIndex = fromPlan.plannedTasks.findIndex(s =>
+    s.taskId === session.taskId &&
+    s.sessionNumber === session.sessionNumber &&
+    s.allocatedHours === session.allocatedHours
+  );
+
+  if (sessionIndex !== -1) {
+    fromPlan.plannedTasks.splice(sessionIndex, 1);
+    fromPlan.totalStudyHours = Math.round((fromPlan.totalStudyHours - session.allocatedHours) * 60) / 60;
+
+    // Add to destination plan
+    toPlan.plannedTasks.push({
+      ...session,
+      scheduledTime: toDate,
+      startTime: '',
+      endTime: '',
+      isFlexible: true,
+      status: 'scheduled'
+    });
+    toPlan.totalStudyHours = Math.round((toPlan.totalStudyHours + session.allocatedHours) * 60) / 60;
+  }
+};
+
+/**
  * Redistributes sessions to create balanced daily workloads
  */
 const redistributeSessionsForBalance = (
