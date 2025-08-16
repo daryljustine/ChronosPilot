@@ -3641,8 +3641,11 @@ export const generateNewStudyPlanWithPreservation = (
   // Apply intelligent workload balancing around one-sitting tasks
   const balancedPlans = rebalanceAroundOneSittingTasks(preservedPlans, tasks, settings, fixedCommitments);
 
+  // Apply final workload smoothing to minimize daily variation
+  const smoothedPlans = applyWorkloadSmoothing(balancedPlans, tasks, settings, fixedCommitments);
+
   return {
-    plans: balancedPlans,
+    plans: smoothedPlans,
     suggestions: result.suggestions
   };
 };
