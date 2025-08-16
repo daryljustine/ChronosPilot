@@ -2383,6 +2383,7 @@ function App() {
                             settings={settings}
                             onAddFixedCommitment={handleAddFixedCommitment}
                             onRefreshStudyPlan={handleRefreshStudyPlan}
+                            onReshuffleStudyPlan={handleReshuffleStudyPlan}
                             onUpdateTask={handleUpdateTask}
                         />
                     )}
