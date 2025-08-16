@@ -14,6 +14,7 @@ interface StudyPlanViewProps {
   settings: UserSettings; // Added settings prop
   onAddFixedCommitment?: (commitment: FixedCommitment) => void; // NEW PROP
   onRefreshStudyPlan?: (preserveManualReschedules: boolean) => void; // NEW PROP for refresh with options
+  onReshuffleStudyPlan?: () => void; // NEW PROP for reshuffling study plan
   onUpdateTask?: (taskId: string, updates: Partial<Task>) => void; // NEW PROP for task completion
 }
 
