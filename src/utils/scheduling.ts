@@ -3359,6 +3359,87 @@ export const preserveManualSchedules = (
  * fixed constraints when generating new schedules
  */
 /**
+ * Handles fallback scenarios when one-sitting tasks can't be scheduled as intended
+ */
+const handleOneSittingFallback = (
+  task: Task,
+  totalHours: number,
+  daysForTask: string[],
+  dailyRemainingHours: { [date: string]: number },
+  settings: UserSettings
+): {
+  scheduled: boolean;
+  scheduledSessions: Array<{ date: string; hours: number }>;
+  totalScheduled: number;
+} => {
+  const result: Array<{ date: string; hours: number }> = [];
+  let remainingHours = totalHours;
+  const minSessionLength = (settings.minSessionLength || 15) / 60;
+
+  // Strategy 1: Try to split into 2 large sessions (maintain large blocks)
+  if (remainingHours > 2 && daysForTask.length >= 2) {
+    const halfHours = remainingHours / 2;
+    let scheduledSessions = 0;
+
+    for (let i = daysForTask.length - 1; i >= 0 && scheduledSessions < 2; i--) {
+      const date = daysForTask[i];
+      const availableHours = dailyRemainingHours[date];
+
+      if (availableHours >= halfHours) {
+        result.push({ date, hours: halfHours });
+        remainingHours -= halfHours;
+        scheduledSessions++;
+      }
+    }
+
+    if (scheduledSessions === 2) {
+      return {
+        scheduled: true,
+        scheduledSessions: result,
+        totalScheduled: totalHours - remainingHours
+      };
+    }
+  }
+
+  // Strategy 2: Progressive scheduling (largest possible sessions first)
+  result.length = 0; // Clear previous attempts
+  remainingHours = totalHours;
+
+  // Sort days by available capacity (descending) and proximity to deadline
+  const sortedDays = [...daysForTask].sort((a, b) => {
+    const aCapacity = dailyRemainingHours[a];
+    const bCapacity = dailyRemainingHours[b];
+
+    if (Math.abs(aCapacity - bCapacity) > 0.5) {
+      return bCapacity - aCapacity; // More capacity first
+    }
+
+    // If capacity is similar, prefer closer to deadline
+    return b.localeCompare(a);
+  });
+
+  for (const date of sortedDays) {
+    if (remainingHours <= 0) break;
+
+    const availableHours = dailyRemainingHours[date];
+    if (availableHours >= minSessionLength) {
+      const hoursToSchedule = Math.min(remainingHours, availableHours);
+
+      if (hoursToSchedule >= minSessionLength) {
+        result.push({ date, hours: hoursToSchedule });
+        remainingHours -= hoursToSchedule;
+      }
+    }
+  }
+
+  return {
+    scheduled: result.length > 0,
+    scheduledSessions: result,
+    totalScheduled: totalHours - remainingHours
+  };
+};
+
+/**
  * Rebalances non-one-sitting tasks around large one-sitting tasks to create consistent daily workloads
  */
 const rebalanceAroundOneSittingTasks = (
